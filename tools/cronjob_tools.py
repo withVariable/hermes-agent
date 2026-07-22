@@ -991,7 +991,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
         "properties": {
             "action": {
                 "type": "string",
-                "description": "One of: create, list, update, pause, resume, remove, run. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."
+                "description": "One of: create, list, update, pause, resume, remove, run. For action=create, 'schedule' is REQUIRED. You must ALSO provide either a non-empty 'prompt' or a non-empty 'skills' list — UNLESS no_agent=true, in which case 'script' is REQUIRED instead and 'prompt'/'skills' are ignored."
             },
             "job_id": {
                 "type": "string",
@@ -1086,7 +1086,53 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "description": "When True, this job becomes CONTINUABLE: the user can reply to its delivery and the agent has the brief in context instead of asking 'what is that?'. On thread-capable platforms (Telegram topics, Discord/Slack threads) a dedicated thread is opened for the job and its replies; on DM-only platforms (WhatsApp/Signal) the brief is mirrored into the origin DM session. Use this for conversational recurring jobs the user will reply to — daily briefings, reminders that kick off follow-up work. Leave unset for fire-and-forget alerts/watchdogs. Overrides the global cron.mirror_delivery config for this one job. Only the origin chat is touched (never fan-out targets); no effect when deliver='local'."
             },
         },
-        "required": ["action"]
+        "required": ["action"],
+        # `schedule` and `prompt`/`skills` are only mandatory for
+        # action=create (list/update/pause/resume/remove/run need none of
+        # them), so they can't be promoted into the flat top-level
+        # `required` array above without breaking those other actions.
+        # These `if`/`then` conditionals express the *actual* rule instead:
+        #   1. action=create always requires `schedule`.
+        #   2. action=create additionally requires `prompt` or a non-empty
+        #      `skills` list, UNLESS `no_agent` is true — in that mode the
+        #      job is driven entirely by `script` (validated at runtime;
+        #      not encoded here since it doesn't gate schema-required-ness).
+        "allOf": [
+            {
+                "if": {
+                    "properties": {"action": {"const": "create"}},
+                    "required": ["action"]
+                },
+                "then": {
+                    "required": ["schedule"]
+                }
+            },
+            {
+                "if": {
+                    "allOf": [
+                        {
+                            "properties": {"action": {"const": "create"}},
+                            "required": ["action"]
+                        },
+                        {
+                            "not": {
+                                "properties": {"no_agent": {"const": True}},
+                                "required": ["no_agent"]
+                            }
+                        }
+                    ]
+                },
+                "then": {
+                    "anyOf": [
+                        {"required": ["prompt"]},
+                        {
+                            "required": ["skills"],
+                            "properties": {"skills": {"minItems": 1}}
+                        }
+                    ]
+                }
+            }
+        ]
     }
 }
 
