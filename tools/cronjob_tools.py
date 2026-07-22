@@ -821,7 +821,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
         "properties": {
             "action": {
                 "type": "string",
-                "description": "One of: create, list, update, pause, resume, remove, run. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."
+                "description": "One of: create, list, update, pause, resume, remove, run. For action=create, 'schedule' is REQUIRED. You must ALSO provide either a non-empty 'prompt' or a non-empty 'skills' list — UNLESS no_agent=true, in which case 'script' is REQUIRED instead and 'prompt'/'skills' are ignored."
             },
             "job_id": {
                 "type": "string",
@@ -912,7 +912,53 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "description": "Optional absolute path to run the job from. When set, AGENTS.md / CLAUDE.md / .cursorrules from that directory are injected into the system prompt, and the terminal/file/code_exec tools use it as their working directory — useful for running a job inside a specific project repo. Must be an absolute path that exists. When unset (default), preserves the original behaviour: no project context files, tools use the scheduler's cwd. On update, pass an empty string to clear. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated."
             },
         },
-        "required": ["action"]
+        "required": ["action"],
+        # `schedule` and `prompt`/`skills` are only mandatory for
+        # action=create (list/update/pause/resume/remove/run need none of
+        # them), so they can't be promoted into the flat top-level
+        # `required` array above without breaking those other actions.
+        # These `if`/`then` conditionals express the *actual* rule instead:
+        #   1. action=create always requires `schedule`.
+        #   2. action=create additionally requires `prompt` or a non-empty
+        #      `skills` list, UNLESS `no_agent` is true — in that mode the
+        #      job is driven entirely by `script` (validated at runtime;
+        #      not encoded here since it doesn't gate schema-required-ness).
+        "allOf": [
+            {
+                "if": {
+                    "properties": {"action": {"const": "create"}},
+                    "required": ["action"]
+                },
+                "then": {
+                    "required": ["schedule"]
+                }
+            },
+            {
+                "if": {
+                    "allOf": [
+                        {
+                            "properties": {"action": {"const": "create"}},
+                            "required": ["action"]
+                        },
+                        {
+                            "not": {
+                                "properties": {"no_agent": {"const": True}},
+                                "required": ["no_agent"]
+                            }
+                        }
+                    ]
+                },
+                "then": {
+                    "anyOf": [
+                        {"required": ["prompt"]},
+                        {
+                            "required": ["skills"],
+                            "properties": {"skills": {"minItems": 1}}
+                        }
+                    ]
+                }
+            }
+        ]
     }
 }
 
