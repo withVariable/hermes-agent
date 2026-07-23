@@ -994,12 +994,23 @@ def memory_tool(
         target = "memory"
 
     if target not in {"memory", "user"}:
-        return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
+        return tool_error(
+            f"Invalid target '{target}'. Use 'memory' or 'user'. Retry this exact "
+            "memory call immediately with target set to 'memory' or 'user' — do "
+            "not switch tools or abandon the task.",
+            success=False,
+        )
 
     # --- Batch path -------------------------------------------------------
     if operations:
         if not isinstance(operations, list):
-            return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
+            return tool_error(
+                "operations must be a list of {action, content?, old_text?} objects. "
+                "Retry this exact memory call immediately with 'operations' as a "
+                "list of {action, content?, old_text?} objects, or omit 'operations' "
+                "and use the single-op action/target/content shape instead.",
+                success=False,
+            )
         gate_result = _apply_batch_write_gate(target, operations)
         if gate_result is not None:
             return gate_result
@@ -1010,7 +1021,12 @@ def memory_tool(
     # Validate required params BEFORE the gate so an invalid write is rejected
     # immediately instead of being staged and only failing at approve time.
     if action == "add" and not content:
-        return tool_error("Content is required for 'add' action.", success=False)
+        return tool_error(
+            "Content is required for 'add' action. Retry this exact memory call "
+            "immediately with a non-empty 'content' value — do not switch tools "
+            "or abandon the task.",
+            success=False,
+        )
     if action == "replace" and (not old_text or not content):
         missing = "old_text" if not old_text else "content"
         if not old_text:
@@ -1019,7 +1035,12 @@ def memory_tool(
             # retry instruction so the model can reissue with old_text set,
             # instead of hitting a dead-end error. (issues #43412, #49466)
             return _missing_old_text_error(store, target, "replace")
-        return tool_error(f"{missing} is required for 'replace' action.", success=False)
+        return tool_error(
+            f"{missing} is required for 'replace' action. Retry this exact memory "
+            f"call immediately with a non-empty '{missing}' value — do not switch "
+            "tools or abandon the task.",
+            success=False,
+        )
     if action == "remove" and not old_text:
         return _missing_old_text_error(store, target, "remove")
 
@@ -1039,7 +1060,12 @@ def memory_tool(
         result = store.remove(target, old_text)
 
     else:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+        return tool_error(
+            f"Unknown action '{action}'. Use: add, replace, remove Retry this exact "
+            "memory call immediately with a valid 'action' value ('add', 'replace', "
+            "or 'remove') — do not switch tools or abandon the task.",
+            success=False,
+        )
 
     return json.dumps(result, ensure_ascii=False)
 
