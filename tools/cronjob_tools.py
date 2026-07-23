@@ -687,7 +687,12 @@ def cronjob(
 
         if normalized == "create":
             if not schedule:
-                return tool_error("schedule is required for create", success=False)
+                return tool_error(
+                    "schedule is required for create. Retry this exact cronjob call "
+                    "immediately with a valid schedule value (e.g. '30m', 'every 2h', "
+                    "'0 9 * * *') — do not switch tools or abandon the task.",
+                    success=False,
+                )
             canonical_skills = _canonical_skills(skill, skills)
             _no_agent = bool(no_agent)
             # Job-shape validation differs by mode:
@@ -699,11 +704,18 @@ def cronjob(
                 if not script:
                     return tool_error(
                         "create with no_agent=True requires a script — "
-                        "the script is the job.",
+                        "the script is the job. Retry this exact cronjob call "
+                        "immediately with a valid 'script' path, or set no_agent=False "
+                        "if you meant to use prompt/skills instead.",
                         success=False,
                     )
             elif not prompt and not canonical_skills:
-                return tool_error("create requires either prompt or at least one skill", success=False)
+                return tool_error(
+                    "create requires either prompt or at least one skill. Retry this "
+                    "exact cronjob call immediately with a non-empty 'prompt' or a "
+                    "non-empty 'skills' list — do not switch tools or abandon the task.",
+                    success=False,
+                )
             if prompt:
                 scan_error = _scan_cron_prompt(prompt)
                 if scan_error:
@@ -778,7 +790,12 @@ def cronjob(
             return json.dumps({"success": True, "count": len(jobs), "jobs": jobs}, indent=2)
 
         if not job_id:
-            return tool_error(f"job_id is required for action '{normalized}'", success=False)
+            return tool_error(
+                f"job_id is required for action '{normalized}'. Retry this exact "
+                "cronjob call immediately with a valid job_id — use action='list' "
+                "first if you don't already have one.",
+                success=False,
+            )
 
         try:
             job = resolve_job_ref(job_id)

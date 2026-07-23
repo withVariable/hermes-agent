@@ -529,6 +529,58 @@ class TestUnifiedCronjobTool:
         assert stored["deliver"] == "telegram"
 
 
+class TestCronjobValidationErrorRetryGuidance:
+    """The four `cronjob()` validation errors must both:
+
+    (a) keep their original leading substring literal and unchanged — this is
+        a load-bearing contract for `coteacher-platform`'s gateway, which
+        classifies these errors by ``rawError.startswith(prefix)`` (see
+        ``cronjobErrorCategory`` in that repo's ``src/gateway/handler.ts``);
+    (b) now also nudge the model to retry the *same* call immediately with the
+        missing/corrected field, instead of abandoning the cronjob call —
+        the fix for the observed prod failure mode where models gave up on
+        a validation error rather than retrying.
+    """
+
+    RETRY_PHRASE = "Retry this exact cronjob call"
+
+    @pytest.fixture(autouse=True)
+    def _setup_cron_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+
+    def test_missing_schedule_preserves_prefix_and_nudges_retry(self):
+        result = json.loads(cronjob(action="create", prompt="Check status"))
+        assert result["success"] is False
+        assert result["error"].startswith("schedule is required for create")
+        assert self.RETRY_PHRASE in result["error"]
+
+    def test_missing_prompt_and_skills_preserves_prefix_and_nudges_retry(self):
+        result = json.loads(cronjob(action="create", schedule="every 1h"))
+        assert result["success"] is False
+        assert result["error"].startswith(
+            "create requires either prompt or at least one skill"
+        )
+        assert self.RETRY_PHRASE in result["error"]
+
+    def test_no_agent_without_script_preserves_prefix_and_nudges_retry(self):
+        result = json.loads(
+            cronjob(action="create", schedule="every 1h", no_agent=True)
+        )
+        assert result["success"] is False
+        assert result["error"].startswith(
+            "create with no_agent=True requires a script"
+        )
+        assert self.RETRY_PHRASE in result["error"]
+
+    def test_missing_job_id_preserves_prefix_and_nudges_retry(self):
+        result = json.loads(cronjob(action="pause"))
+        assert result["success"] is False
+        assert result["error"].startswith("job_id is required for action 'pause'")
+        assert self.RETRY_PHRASE in result["error"]
+
+
 # =========================================================================
 # Per-job model/provider override resolution
 # =========================================================================
