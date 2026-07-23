@@ -464,6 +464,65 @@ class TestMemoryToolDispatcher:
         assert "current_entries" not in result
 
 
+class TestMemoryValidationErrorRetryGuidance:
+    """The five `memory_tool()` validation errors below must both:
+
+    (a) keep their original leading substring literal and unchanged — this is
+        a load-bearing contract for `coteacher-platform`'s gateway, which
+        classifies these errors by ``rawError.startswith(prefix)``;
+    (b) now also nudge the model to retry the *same* call immediately with the
+        missing/corrected field, instead of abandoning the memory tool call —
+        the fix for the observed prod failure mode where models gave up (or
+        looped unchanged) on a validation error rather than retrying.
+
+    The `_missing_old_text_error` path (replace/remove missing old_text) and
+    the `store is None` case are intentionally not covered here: they already
+    carry good retry guidance / are not retryable, and are unchanged by this
+    fix.
+    """
+
+    RETRY_PHRASE = "Retry this exact memory call"
+
+    def test_invalid_target_preserves_prefix_and_nudges_retry(self, store):
+        result = json.loads(
+            memory_tool(action="add", target="invalid", content="x", store=store)
+        )
+        assert result["success"] is False
+        assert result["error"].startswith("Invalid target 'invalid'. Use 'memory' or 'user'.")
+        assert self.RETRY_PHRASE in result["error"]
+
+    def test_invalid_operations_type_preserves_prefix_and_nudges_retry(self, store):
+        result = json.loads(
+            memory_tool(target="memory", operations="not-a-list", store=store)
+        )
+        assert result["success"] is False
+        assert result["error"].startswith(
+            "operations must be a list of {action, content?, old_text?} objects."
+        )
+        assert self.RETRY_PHRASE in result["error"]
+
+    def test_add_missing_content_preserves_prefix_and_nudges_retry(self, store):
+        result = json.loads(memory_tool(action="add", store=store))
+        assert result["success"] is False
+        assert result["error"].startswith("Content is required for 'add' action.")
+        assert self.RETRY_PHRASE in result["error"]
+
+    def test_replace_missing_content_preserves_prefix_and_nudges_retry(self, store):
+        store.add("memory", "fact A")
+        result = json.loads(
+            memory_tool(action="replace", old_text="fact A", store=store)
+        )
+        assert result["success"] is False
+        assert result["error"].startswith("content is required for 'replace' action.")
+        assert self.RETRY_PHRASE in result["error"]
+
+    def test_unknown_action_preserves_prefix_and_nudges_retry(self, store):
+        result = json.loads(memory_tool(action="unknown", store=store))
+        assert result["success"] is False
+        assert result["error"].startswith("Unknown action 'unknown'. Use: add, replace, remove")
+        assert self.RETRY_PHRASE in result["error"]
+
+
 class TestMemoryBatch:
     """The 'operations' batch shape: atomic, all-or-nothing, final-budget."""
 
