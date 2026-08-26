@@ -529,6 +529,12 @@ class TestBlockingApprovalE2E:
         assert "BLOCKED" in result_holder[0]["message"]
         unregister_gateway_notify(session_key)
 
+    def test_default_approval_timeout_is_one_hour(self):
+        from tools.approval import _get_approval_timeout
+
+        with patch("tools.approval._get_approval_config", return_value={}):
+            assert _get_approval_timeout() == 3600
+
     @pytest.mark.parametrize(
         "approval_config",
         [

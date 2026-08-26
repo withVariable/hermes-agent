@@ -2491,7 +2491,7 @@ def is_approval_bypass_active() -> bool:
 
 
 def _get_approval_timeout() -> int:
-    """Read the approval timeout from config. Defaults to 300 seconds.
+    """Read the approval timeout from config. Defaults to 3600 seconds (one hour).
 
     The default matches DEFAULT_CONFIG["approvals"]["timeout"]. Gateway
     approvals arrive as push notifications the user may not see for a couple
@@ -2499,9 +2499,9 @@ def _get_approval_timeout() -> int:
     the wait had already failed closed).
     """
     try:
-        return int(_get_approval_config().get("timeout", 300))
+        return int(_get_approval_config().get("timeout", 3600))
     except (ValueError, TypeError):
-        return 300
+        return 3600
 
 
 def _get_cron_approval_mode() -> str:
