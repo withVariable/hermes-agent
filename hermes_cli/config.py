@@ -2651,10 +2651,10 @@ DEFAULT_CONFIG = {
     # closed (deny). Shared by the CLI prompt and gateway/messaging waits.
     # Messaging approvals arrive as a push notification the user may not see
     # immediately — 60s proved too tight on Telegram/Discord (the prompt
-    # expired before the user reached their phone), so the default is 3600 (one hour).
+    # expired before the user reached their phone), so the default is 300.
     "approvals": {
         "mode": "smart",
-        "timeout": 3600,
+        "timeout": 300,
         "cron_mode": "deny",
         # User-defined deny rules: fnmatch globs matched against terminal
         # commands. A match blocks the command unconditionally — BEFORE the
