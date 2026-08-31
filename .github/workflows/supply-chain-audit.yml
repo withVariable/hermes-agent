@@ -65,17 +65,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Get GitHub App token
-        id: app-token
-        uses: ./.github/actions/get-app-token
-        with:
-          client-id: ${{ secrets.APP_CLIENT_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-
       - name: Scan diff for critical patterns
         id: scan
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
           CI_REVIEWED: ${{ contains(github.event.pull_request.labels.*.name, 'ci-reviewed') }}
         run: |
           set -euo pipefail
@@ -297,4 +290,19 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
               f.write(f"review_status={json.dumps(merged)}\n")
               f.write("critical_findings=" + os.environ.get("CRITICAL_FINDINGS", "false") + "\n")
+
+          # Write review-status.json for the live comment poller artifact.
+          with open("review-status.json", "w", encoding="utf-8") as f:
+              f.write(f"review_status={json.dumps(merged)}\n")
           PYEOF
+
+      - name: Upload review status artifact
+        if: always() && steps.merge.outcome != 'skipped'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: review-status-supply-chain
+          path: review-status.json
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: ignore
