@@ -107,7 +107,9 @@ except Exception:
 # =============================================================================
 
 AUTH_STORE_VERSION = 1
-AUTH_LOCK_TIMEOUT_SECONDS = 15.0
+AUTH_LOCK_TIMEOUT_SECONDS = float(
+    os.getenv("HERMES_AUTH_LOCK_TIMEOUT_SECONDS", "15")
+)
 
 # Nous Portal defaults
 DEFAULT_NOUS_PORTAL_URL = "https://portal.nousresearch.com"
@@ -146,7 +148,9 @@ try:  # Version tag for the Codex token-endpoint User-Agent; fall back if unavai
 except Exception:  # pragma: no cover - version import should always succeed
     _HERMES_CLI_VERSION = "unknown"
 CODEX_OAUTH_USER_AGENT = f"hermes-cli/{_HERMES_CLI_VERSION}"
-CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = int(
+    os.getenv("HERMES_CODEX_REFRESH_SKEW_SECONDS", "120")
+)
 XAI_OAUTH_ISSUER = "https://auth.x.ai"
 XAI_OAUTH_DISCOVERY_URL = f"{XAI_OAUTH_ISSUER}/.well-known/openid-configuration"
 XAI_OAUTH_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
