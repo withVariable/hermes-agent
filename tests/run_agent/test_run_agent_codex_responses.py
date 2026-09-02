@@ -102,6 +102,83 @@ def _build_azure_foundry_agent(monkeypatch, *, model="gpt-5.4"):
     return agent
 
 
+def test_provider_backend_family_preserves_consumer_codex_semantics(monkeypatch):
+    """A trusted proxy keeps the consumer Codex wire contract by profile.
+
+    The configured hostname intentionally contains no OpenAI/Codex signal. This
+    is the public provider-plugin path used by gateways that own OAuth upstream.
+    """
+    import providers
+    from agent.codex_runtime import _sanitize_consumer_codex_request
+    from agent.native_compaction import native_compaction_context_management
+    from agent.transports.codex import ResponsesApiTransport
+    from providers import CODEX_CONSUMER_BACKEND_FAMILY, ProviderProfile
+
+    _patch_agent_bootstrap(monkeypatch)
+    providers.list_providers()  # finish lazy discovery before the test override
+    profile = ProviderProfile(
+        name="proxy-codex-test",
+        api_mode="codex_responses",
+        env_vars=("PROXY_CODEX_TOKEN",),
+        base_url="https://gateway.example/v1/codex",
+        backend_family=CODEX_CONSUMER_BACKEND_FAMILY,
+    )
+    monkeypatch.setitem(providers._REGISTRY, profile.name, profile)
+
+    agent = run_agent.AIAgent(
+        model="gpt-5.6-sol",
+        provider=profile.name,
+        api_mode=profile.api_mode,
+        base_url=profile.base_url,
+        api_key="gateway-client-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    assert agent._is_codex_backend() is True
+
+    transport = ResponsesApiTransport()
+    request = transport.build_kwargs(
+        model=agent.model,
+        messages=[{"role": "user", "content": "Ping"}],
+        tools=[],
+        base_url=agent.base_url,
+        is_codex_backend=agent._is_codex_backend(),
+        session_id="session-proxy",
+        cache_scope_id="cache-proxy",
+        max_tokens=1234,
+    )
+    assert request["extra_headers"]["session_id"] == "session-proxy"
+    assert request["extra_headers"]["x-client-request-id"]
+    assert "max_output_tokens" not in request
+    assert transport._resolve_issuer_kind(
+        {
+            "base_url": agent.base_url,
+            "is_codex_backend": agent._is_codex_backend(),
+        }
+    ) == "codex_backend"
+
+    sanitized = _sanitize_consumer_codex_request(
+        agent,
+        {
+            "model": agent.model,
+            "input": [{"role": "user", "content": "Ping"}],
+            "prompt_cache_retention": "24h",
+        },
+    )
+    assert "prompt_cache_retention" not in sanitized
+
+    agent.codex_responses_native_compaction = True
+    agent.compression_enabled = True
+    agent.compression_checkpoint_required = False
+    assert native_compaction_context_management(
+        agent,
+        is_codex_backend=agent._is_codex_backend(),
+    ) is not None
+
+
 def _codex_message_response(text: str):
     return SimpleNamespace(
         output=[
