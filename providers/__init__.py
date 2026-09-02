@@ -38,7 +38,11 @@ import logging
 import sys
 from pathlib import Path
 
-from providers.base import OMIT_TEMPERATURE, ProviderProfile  # noqa: F401
+from providers.base import (  # noqa: F401
+    CODEX_CONSUMER_BACKEND_FAMILY,
+    OMIT_TEMPERATURE,
+    ProviderProfile,
+)
 
 logger = logging.getLogger(__name__)
 

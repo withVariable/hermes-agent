@@ -1555,14 +1555,7 @@ class AIAgent:
         """
         if self.api_mode != "codex_responses":
             return None
-        is_codex_backend = (
-            self.provider == "openai-codex"
-            or (
-                getattr(self, "_base_url_hostname", "") == "chatgpt.com"
-                and "/backend-api/codex" in (getattr(self, "_base_url_lower", "") or "")
-            )
-        )
-        if not is_codex_backend:
+        if not self._is_codex_backend():
             return None
         eff_model = (model if model is not None else self.model) or ""
         model_lower = eff_model.lower()
@@ -1610,10 +1603,30 @@ class AIAgent:
         return self._is_copilot_url()
 
     def _is_codex_backend(self) -> bool:
-        """Return True for the ChatGPT OAuth Codex Responses backend."""
+        """Return True for direct or provider-declared consumer Codex routes."""
+        if getattr(self, "api_mode", None) != "codex_responses":
+            return False
+        try:
+            from providers import (
+                CODEX_CONSUMER_BACKEND_FAMILY,
+                get_provider_profile,
+            )
+
+            profile = get_provider_profile(
+                (getattr(self, "provider", "") or "").strip()
+            )
+            if (
+                profile is not None
+                and getattr(profile, "backend_family", "")
+                == CODEX_CONSUMER_BACKEND_FAMILY
+            ):
+                return True
+        except Exception:
+            # Provider discovery is an extension boundary. A broken optional
+            # plugin must not disable the historical URL fallback below.
+            pass
         return (
-            getattr(self, "api_mode", None) == "codex_responses"
-            and getattr(self, "_base_url_hostname", "") == "chatgpt.com"
+            getattr(self, "_base_url_hostname", "") == "chatgpt.com"
             and "/backend-api/codex"
             in (getattr(self, "_base_url_lower", "") or "")
         )

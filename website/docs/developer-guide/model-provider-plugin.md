@@ -99,6 +99,7 @@ Full definition in `providers/base.py`. The most useful ones:
 | `base_url` | str | Default inference endpoint |
 | `models_url` | str | Explicit catalog URL (falls back to `{base_url}/models`) |
 | `auth_type` | str | `api_key` \| `oauth_device_code` \| `oauth_external` \| `copilot` \| `aws_sdk` \| `external_process` |
+| `backend_family` | str | Optional upstream wire contract when a proxy URL hides it; `codex_consumer` preserves ChatGPT Codex Responses semantics |
 | `fallback_models` | `tuple[str, ...]` | Curated list shown when live catalog fetch fails |
 | `default_headers` | `dict[str, str]` | Sent on every request (e.g. Copilot's `Editor-Version`) |
 | `fixed_temperature` | Any | `None` = use caller's value; `OMIT_TEMPERATURE` sentinel = don't send temperature at all (Kimi) |
@@ -188,6 +189,13 @@ Four values are recognized. Hermes picks one based on:
 5. Default `chat_completions`
 
 Set `profile.api_mode` to match the default your provider ships — it acts as a hint. User URL overrides still win.
+
+When a trusted proxy fronts the ChatGPT consumer Codex endpoint, also set
+`backend_family="codex_consumer"`. That capability keeps the consumer-specific
+request sanitizer, session/cache headers, encrypted-reasoning provenance, and
+native compaction active even though the configured `base_url` is the proxy.
+It does not provide OAuth or credential refresh; the proxy remains responsible
+for authenticating upstream.
 
 ## Auth types
 

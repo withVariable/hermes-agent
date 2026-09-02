@@ -20,6 +20,11 @@ logger = logging.getLogger(__name__)
 # Sentinel for "omit temperature entirely" (Kimi: server manages it)
 OMIT_TEMPERATURE = object()
 
+# Stable public identifier for providers that proxy the ChatGPT consumer Codex
+# Responses backend. The transport URL alone cannot identify that backend when
+# a trusted gateway terminates client authentication in front of it.
+CODEX_CONSUMER_BACKEND_FAMILY = "codex_consumer"
+
 
 def _profile_user_agent() -> str:
     """Return a ``hermes-cli/<version>`` UA string, with a stable fallback.
@@ -55,6 +60,13 @@ class ProviderProfile:
     models_url: str = ""  # explicit models endpoint; falls back to {base_url}/models
     auth_type: str = "api_key"   # api_key|oauth_device_code|oauth_external|copilot|aws_sdk
     supports_health_check: bool = True  # False → doctor skips /models probe for this provider
+
+    # Optional wire-behavior family for a provider whose public URL does not
+    # identify the real upstream protocol. ``codex_consumer`` preserves the
+    # ChatGPT Codex request contract through a trusted proxy: request
+    # sanitization, cache/session headers, reasoning provenance, and native
+    # compaction. Empty keeps the historical URL-based detection.
+    backend_family: str = ""
 
     # ── Vision support ────────────────────────────────────────
     # True when the provider's API accepts image content inside
