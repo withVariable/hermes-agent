@@ -19,6 +19,12 @@ logger = logging.getLogger(__name__)
 FailureCallback = Callable[[str, BaseException], None]
 TitleCallback = Callable[[str], None]
 
+# The prompt asks for 3-7 words, but the pinned provider path accepts arbitrary
+# prose. Keep the bridge fix deliberately narrow: reject answer-shaped output
+# rather than persisting a model preamble as the conversation title. This is the
+# backport of Hermes commit d5167831 onto the CoTeacher bridge pin.
+_MAX_TITLE_WORDS = 12
+
 _TITLE_PROMPT = (
     "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
     "following exchange. The title should capture the main topic or intent. "
@@ -71,11 +77,18 @@ def generate_title(
     assistant_snippet = assistant_response[:500] if assistant_response else ""
 
     language = _title_language()
-    prompt = _TITLE_PROMPT_PINNED_LANGUAGE.format(language=language) if language else _TITLE_PROMPT
+    prompt = (
+        _TITLE_PROMPT_PINNED_LANGUAGE.format(language=language)
+        if language
+        else _TITLE_PROMPT
+    )
 
     messages = [
         {"role": "system", "content": prompt},
-        {"role": "user", "content": f"User: {user_snippet}\n\nAssistant: {assistant_snippet}"},
+        {
+            "role": "user",
+            "content": f"User: {user_snippet}\n\nAssistant: {assistant_snippet}",
+        },
     ]
 
     try:
@@ -89,12 +102,22 @@ def generate_title(
         )
         title = (response.choices[0].message.content or "").strip()
         # Clean up: remove quotes, trailing punctuation, prefixes like "Title: "
-        title = title.strip('"\'')
+        title = title.strip("\"'")
         if title.lower().startswith("title:"):
             title = title[6:].strip()
         # Enforce reasonable length
         if len(title) > 80:
             title = title[:77] + "..."
+        # The prompt asks for a 3-7 word title. Reject answer-shaped output
+        # instead of persisting a model preamble or full response as the title.
+        # This is the minimal backport of Hermes d5167831 for the bridge pin.
+        if title and len(title.split()) > _MAX_TITLE_WORDS:
+            logger.debug(
+                "Rejecting answer-shaped title output (%d words > %d)",
+                len(title.split()),
+                _MAX_TITLE_WORDS,
+            )
+            return None
         return title if title else None
     except Exception as e:
         # Log at WARNING so this shows up in agent.log without debug mode.
@@ -138,7 +161,10 @@ def auto_title_session(
         return
 
     title = generate_title(
-        user_message, assistant_response, failure_callback=failure_callback, main_runtime=main_runtime
+        user_message,
+        assistant_response,
+        failure_callback=failure_callback,
+        main_runtime=main_runtime,
     )
     if not title:
         return
@@ -178,7 +204,9 @@ def maybe_auto_title(
     # conversation_history includes the exchange that just happened,
     # so for a first exchange we expect exactly 1 user message
     # (or 2 counting system). Be generous: generate on first 2 exchanges.
-    user_msg_count = sum(1 for m in (conversation_history or []) if m.get("role") == "user")
+    user_msg_count = sum(
+        1 for m in (conversation_history or []) if m.get("role") == "user"
+    )
     if user_msg_count > 2:
         return
 
