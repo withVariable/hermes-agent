@@ -8,8 +8,10 @@ from typing import Dict
 
 # Tools whose thresholds must never be overridden.
 # read_file=inf prevents infinite persist->read->persist loops.
+# skill_view loads instructions (including references) the model must read fully.
 PINNED_THRESHOLDS: Dict[str, float] = {
     "read_file": float("inf"),
+    "skill_view": float("inf"),
 }
 
 # Defaults matching the current hardcoded values in tool_result_storage.py.
