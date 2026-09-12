@@ -881,6 +881,9 @@ def _ensure_hermes_home_managed(home: Path):
 # =============================================================================
 
 DEFAULT_CONFIG = {
+    # Opt-in exemptions from per-result and aggregate tool-output truncation.
+    # Full results still consume context and remain subject to compression.
+    "tool_result_budget": {"exempt_tools": []},
     "model": "",
     "providers": {},
     "fallback_providers": [],

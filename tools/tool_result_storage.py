@@ -189,7 +189,7 @@ def enforce_turn_budget(
     first (via sandbox write) until under budget. Already-persisted results
     are skipped.
 
-    Unlimited per-tool thresholds are protected here too. Their content counts
+    Explicitly configured exempt tools are protected here too. Their content counts
     toward the total, but only eligible results can spill; a protected-only
     remainder may exceed the budget.
 
@@ -204,7 +204,7 @@ def enforce_turn_budget(
         tool_name = msg.get("name") or msg.get("tool_name") or ""
         if (
             PERSISTED_OUTPUT_TAG not in content
-            and config.resolve_threshold(tool_name) != float("inf")
+            and tool_name not in config.exempt_tools
         ):
             candidates.append((i, size))
 

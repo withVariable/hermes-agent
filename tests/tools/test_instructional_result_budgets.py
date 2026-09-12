@@ -1,43 +1,43 @@
-"""Instruction loads survive result spilling even when the turn exceeds its budget."""
+"""Budget exemptions are an operator opt-in, not a change to tool defaults."""
 
-from dataclasses import replace
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
-from tools.budget_config import budget_for_context_window
+from agent.tool_executor import _budget_for_agent
 from tools.tool_result_storage import enforce_turn_budget, maybe_persist_tool_result
 
 
-@pytest.mark.parametrize("tool_name", ["skill_view", "read_file"])
+@pytest.mark.parametrize("enabled", [False, True])
 @pytest.mark.parametrize("storage", ["missing", "fails", "works"])
-@pytest.mark.parametrize("context_length", [65_536, 256_000])
-def test_instructional_results_survive_both_budgets(tool_name, storage, context_length):
-    content = "intro\n" + "instruction\n" * 20_000 + "final instruction"
+@pytest.mark.parametrize("context_length", [None, 65_536, 256_000])
+def test_configured_results_survive_both_budgets(monkeypatch, enabled, storage, context_length):
+    names = ["skill_view"] if enabled else []
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"tool_result_budget": {"exempt_tools": names}})
+    agent = SimpleNamespace(context_compressor=SimpleNamespace(context_length=context_length))
+    config = _budget_for_agent(agent)
+    content = "instruction\n" * 20_000 + "final instruction"
     env = None if storage == "missing" else MagicMock()
     if env is not None:
         env.execute.return_value = {"returncode": int(storage == "fails")}
-    config = replace(budget_for_context_window(context_length), tool_overrides={tool_name: 1})
-    output = maybe_persist_tool_result(content, tool_name, "instructions", env, config)
-    messages = [{"name": tool_name, "tool_call_id": "instructions", "content": output}]
+    output = maybe_persist_tool_result(content, "skill_view", "instructions", env, config)
+    messages = [{"name": "skill_view", "tool_call_id": "instructions", "content": output}]
     enforce_turn_budget(messages, env, config)
-    assert messages[0]["content"] == content
-    if env is not None:
+    assert (messages[0]["content"] == content) is enabled
+    if enabled and env is not None:
         env.execute.assert_not_called()
 
 
 @pytest.mark.parametrize("identity_key", ["name", "tool_name"])
-def test_turn_budget_spills_only_eligible_results(identity_key):
-    content = "read every instruction\n" * 10_000
-    messages = [
-        {identity_key: name, "tool_call_id": name, "content": content}
-        for name in ["skill_view", "read_file", "custom_instructions", "terminal", ""]
-    ]
-    # Existing registry escape hatches must be honored by aggregate enforcement too.
-    def threshold(name, default):
-        return float("inf") if name == "custom_instructions" else default
-
-    with patch("tools.registry.registry.get_max_result_size", side_effect=threshold):
-        enforce_turn_budget(messages, config=budget_for_context_window(65_536))
-    assert all(message["content"] == content for message in messages[:3])
-    assert all(message["content"] != content for message in messages[3:])
+@pytest.mark.parametrize("settings", [{}, {"exempt_tools": []}, {"exempt_tools": "skill_view"}, {"exempt_tools": [3]}, {"exempt_tools": ["skill_view", "custom_instructions"]}])
+def test_only_explicit_exemptions_skip_aggregate_budget(monkeypatch, identity_key, settings):
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"tool_result_budget": settings})
+    config = _budget_for_agent(SimpleNamespace(context_compressor=SimpleNamespace(context_length=65_536)))
+    assert config.turn_budget < 200_000
+    content = "instruction\n" * 20_000
+    names = ["skill_view", "read_file", "custom_instructions", "terminal", ""]
+    messages = [{identity_key: name, "tool_call_id": name, "content": content} for name in names]
+    enforce_turn_budget(messages, config=config)
+    for name, message in zip(names, messages):
+        assert (message["content"] == content) is (name in config.exempt_tools)

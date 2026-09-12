@@ -1,6 +1,6 @@
 """Configurable budget constants for tool result persistence.
 
-Per-tool resolution: pinned > config overrides > registry > default.
+Per-tool resolution: explicit exemptions > pinned > overrides > registry > default.
 """
 
 from dataclasses import dataclass, field
@@ -8,10 +8,8 @@ from typing import Dict
 
 # Tools whose thresholds must never be overridden.
 # read_file=inf prevents infinite persist->read->persist loops.
-# skill_view loads instructions (including references) the model must read fully.
 PINNED_THRESHOLDS: Dict[str, float] = {
     "read_file": float("inf"),
-    "skill_view": float("inf"),
 }
 
 # Defaults matching the current hardcoded values in tool_result_storage.py.
@@ -35,11 +33,13 @@ class BudgetConfig:
     turn_budget: int = DEFAULT_TURN_BUDGET_CHARS
     preview_size: int = DEFAULT_PREVIEW_SIZE_CHARS
     tool_overrides: Dict[str, int] = field(default_factory=dict)
+    # Explicit operator opt-in: preserve these results through both budget passes.
+    exempt_tools: frozenset[str] = field(default_factory=frozenset)
 
     def resolve_threshold(self, tool_name: str) -> int | float:
         """Resolve the persistence threshold for a tool.
 
-        Priority: pinned -> tool_overrides -> registry per-tool -> default.
+        Priority: explicit exemptions -> pinned -> tool_overrides -> registry -> default.
 
         The registry per-tool value is capped at ``default_result_size`` so a
         context-scaled budget (small model) actually constrains tools that
@@ -48,6 +48,8 @@ class BudgetConfig:
         equal 100K; for a scaled-down budget it prevents a per-tool registry
         value from re-inflating the cap past the model's window (#23767).
         """
+        if tool_name in self.exempt_tools:
+            return float("inf")
         if tool_name in PINNED_THRESHOLDS:
             return PINNED_THRESHOLDS[tool_name]
         if tool_name in self.tool_overrides:
