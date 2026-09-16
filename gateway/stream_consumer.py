@@ -999,12 +999,11 @@ class GatewayStreamConsumer:
                     should_edit = should_edit or (
                         (elapsed >= self._current_edit_interval
                             and self._accumulated)
-                        # buffer_threshold is intentionally codepoint-based:
-                        # it's a debounce heuristic ("send updates roughly
-                        # every N visible characters"), not a platform-limit
-                        # check. _len_fn is reserved for overflow detection.
-                        or (len(self._accumulated) >= self.cfg.buffer_threshold
-                            and not self._flood_strikes)
+                        # The size threshold may accelerate the first output,
+                        # never repeated updates: the cumulative buffer stays
+                        # large, even during flood backoff.
+                        or (self._last_edit_time == 0.0
+                            and len(self._accumulated) >= self.cfg.buffer_threshold)
                     )
 
                 current_update_visible = False
