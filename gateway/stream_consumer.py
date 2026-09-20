@@ -1003,7 +1003,8 @@ class GatewayStreamConsumer:
                         # it's a debounce heuristic ("send updates roughly
                         # every N visible characters"), not a platform-limit
                         # check. _len_fn is reserved for overflow detection.
-                        or len(self._accumulated) >= self.cfg.buffer_threshold
+                        or (len(self._accumulated) >= self.cfg.buffer_threshold
+                            and not self._flood_strikes)
                     )
 
                 current_update_visible = False
@@ -2602,9 +2603,11 @@ class GatewayStreamConsumer:
                         # edits after _MAX_FLOOD_STRIKES consecutive failures.
                         if self._is_flood_error(result):
                             self._flood_strikes += 1
-                            self._current_edit_interval = min(
-                                self._current_edit_interval * 2, 10.0,
-                            )
+                            backoff = min(self._current_edit_interval * 2, 10.0)
+                            retry_after = getattr(result, "retry_after", None)
+                            if isinstance(retry_after, (int, float)) and retry_after > 0:
+                                backoff = max(backoff, min(float(retry_after), 30.0))
+                            self._current_edit_interval = backoff
                             logger.debug(
                                 "Flood control on edit (strike %d/%d), "
                                 "backoff interval → %.1fs",
