@@ -1973,6 +1973,68 @@ class TestMessageRouting:
 # ---------------------------------------------------------------------------
 
 
+class TestThreadParentMetadataReplay:
+    """Backport coverage for upstream #118365, including the Tars DM sequence."""
+
+    @staticmethod
+    def parent_update(channel_type):
+        original = {
+            "text": "<@U_BOT> Get started on VAR-1184. Use beads workflow",
+            "user": "U_USER",
+            "channel": "D123" if channel_type == "im" else "C123",
+            "channel_type": channel_type,
+            "team": "T123",
+            "ts": "123.000001",
+        }
+        return {
+            "type": "message",
+            "subtype": "message_changed",
+            "channel": original["channel"],
+            "channel_type": channel_type,
+            "team": "T123",
+            "ts": "125.000001",
+            "event_ts": "125.000001",
+            "previous_message": original,
+            "message": dict(original, reply_count=1, latest_reply="124.000001"),
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("channel_type", ["im", "channel"])
+    @pytest.mark.parametrize("warm", [False, True])
+    async def test_metadata_update_does_not_dispatch_parent(self, adapter, channel_type, warm):
+        event = self.parent_update(channel_type)
+        if warm:
+            await adapter._handle_slack_message(event["previous_message"])
+            adapter.handle_message.assert_awaited_once()
+            adapter.handle_message.reset_mock()
+        await adapter._handle_slack_message(event)
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reply_after_restart_dispatches_only_reply(self, adapter):
+        event = self.parent_update("im")
+        adapter._app.client.conversations_replies.return_value = {"messages": []}
+        reply = dict(
+            event["previous_message"], text="Yes", ts="124.000001",
+            thread_ts="123.000001",
+        )
+        await adapter._handle_slack_message(reply)
+        await adapter._handle_slack_message(event)
+        adapter.handle_message.assert_awaited_once()
+        assert adapter.handle_message.call_args.args[0].text == "Yes"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("edited", [None, {"user": "U_USER", "ts": "125.000001"}])
+    async def test_changed_text_is_still_dispatched(self, adapter, edited):
+        event = self.parent_update("im")
+        event["message"]["text"] = "Corrected request"
+        if edited:
+            event["message"]["edited"] = edited
+        await adapter._handle_slack_message(event)
+        adapter.handle_message.assert_awaited_once()
+        assert adapter.handle_message.call_args.args[0].text == "Corrected request"
+
+
 class TestSendTyping:
     """Test typing indicator via assistant.threads.setStatus."""
 
