@@ -22,6 +22,8 @@ from typing import Callable, ClassVar, Dict, Optional, Any, Tuple, List
 
 import aiohttp
 
+from agent.retry_utils import parse_retry_after_seconds
+
 try:
     from slack_bolt.async_app import AsyncApp
     from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
@@ -954,6 +956,10 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_mode_task: Optional[asyncio.Task] = None
         # Multi-workspace support
         self._team_clients: Dict[str, Any] = {}  # team_id → WebClient
+        # chat.update's quota is shared by all threads in a workspace. Clients
+        # are workspace-scoped; serialize edits and share any server cooldown.
+        self._edit_locks: Dict[Any, asyncio.Lock] = {}
+        self._edit_next_at: Dict[Any, float] = {}
         self._team_bot_user_ids: Dict[str, str] = {}  # team_id → bot_user_id
         # channel_id → team_id. Grows with every channel AND every DM the bot
         # sees (DM channel IDs are per-user), so it must be bounded on busy
@@ -2971,6 +2977,34 @@ class SlackAdapter(BasePlatformAdapter):
             self._status_message_ids[key] = str(result.message_id)
         return result
 
+    @staticmethod
+    def _retry_after_from_exc(e: BaseException) -> Optional[float]:
+        """Retry-After from an SDK error response (upstream Slack helper)."""
+        return parse_retry_after_seconds(getattr(getattr(e, "response", None), "headers", None))
+
+    async def _chat_update(self, client: Any, **kwargs: Any) -> Any:
+        """Pace chat.update across this workspace, including final edits.
+
+        1.25s leaves a little headroom under Slack's documented 50/minute
+        tier. A server-requested cooldown always takes precedence.
+        """
+        lock = self._edit_locks.setdefault(client, asyncio.Lock())
+        async with lock:
+            delay = self._edit_next_at.get(client, 0.0) - time.monotonic()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            try:
+                return await client.chat_update(**kwargs)
+            except Exception as exc:
+                retry_after = self._retry_after_from_exc(exc)
+                if getattr(getattr(exc, "response", None), "status_code", None) == 429:
+                    self._edit_next_at[client] = time.monotonic() + (retry_after or 1.25)
+                raise
+            finally:
+                self._edit_next_at[client] = max(
+                    self._edit_next_at.get(client, 0.0), time.monotonic() + 1.25,
+                )
+
     async def edit_message(
         self,
         chat_id: str,
@@ -3011,9 +3045,10 @@ class SlackAdapter(BasePlatformAdapter):
                 if blocks:
                     update_kwargs["blocks"] = blocks
             try:
-                await self._get_client(
-                    chat_id, team_id=self._metadata_team_id(metadata)
-                ).chat_update(**update_kwargs)
+                await self._chat_update(
+                    self._get_client(chat_id, team_id=self._metadata_team_id(metadata)),
+                    **update_kwargs,
+                )
             except Exception as e:
                 if update_kwargs.get("blocks") and self._is_block_payload_rejection(e):
                     retry_kwargs = dict(update_kwargs)
@@ -3025,9 +3060,10 @@ class SlackAdapter(BasePlatformAdapter):
                         "[Slack] Block Kit payload rejected; retrying edit without blocks: %s",
                         e,
                     )
-                    await self._get_client(
-                        chat_id, team_id=self._metadata_team_id(metadata)
-                    ).chat_update(**retry_kwargs)
+                    await self._chat_update(
+                        self._get_client(chat_id, team_id=self._metadata_team_id(metadata)),
+                        **retry_kwargs,
+                    )
                 else:
                     raise
             if finalize:
@@ -3080,7 +3116,13 @@ class SlackAdapter(BasePlatformAdapter):
                 e,
                 exc_info=True,
             )
-            return SendResult(success=False, error=str(e))
+            rate_limited = getattr(getattr(e, "response", None), "status_code", None) == 429
+            return SendResult(
+                success=False,
+                error=f"rate_limited: {e}" if rate_limited else str(e),
+                retryable=self._is_retryable_upload_error(e),
+                retry_after=self._retry_after_from_exc(e),
+            )
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
         """Delete a Slack message previously sent by this bot.
