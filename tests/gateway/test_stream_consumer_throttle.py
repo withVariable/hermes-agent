@@ -49,7 +49,7 @@ async def test_run_throttles_cumulative_updates_but_not_finalization(monkeypatch
     ))
     text = "A" * 64
     consumer.on_delta(text)
-    times = iter([0.15, 0.2, 1.2, 1.3, 2.3, 3.3, 3.35])
+    times = iter([0.15, 0.2, 1.2, 1.3, 2.3, 3.3, 7.3, 7.35])
     final_text = None
 
     async def next_tick(delay):
@@ -60,7 +60,7 @@ async def test_run_throttles_cumulative_updates_but_not_finalization(monkeypatch
         clock.now = next(times)
         text += " more"
         consumer.on_delta(" more")
-        if clock.now == 3.35:
+        if clock.now == 7.35:
             if boundary:
                 final_text = text
                 consumer.on_segment_break()
@@ -74,9 +74,9 @@ async def test_run_throttles_cumulative_updates_but_not_finalization(monkeypatch
     ))
     await consumer.run()
 
-    expected_times = [0.1, 1.2, 3.3] if flood else [0.1, 1.2, 2.3, 3.3]
+    expected_times = [0.1, 1.2, 7.3] if flood else [0.1, 1.2, 2.3, 3.3, 7.3]
     assert [when for when, _ in updates] == expected_times
-    assert finals == [(3.35, final_text)]
+    assert finals == [(7.35, final_text)]
     assert all(len(content) >= consumer.cfg.buffer_threshold for _, content in updates)
     if not boundary:
         assert consumer.final_content_delivered
