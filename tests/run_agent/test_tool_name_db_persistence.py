@@ -43,3 +43,22 @@ def test_tool_name_persisted_to_session_db():
     ]
     assert len(tool_appends) == 1
     assert tool_appends[0].kwargs["tool_name"] == "terminal"
+
+
+def test_current_turn_id_persisted_on_each_new_message():
+    session_db = MagicMock()
+    agent = _make_agent(session_db)
+    agent._current_turn_id = "turn-123"
+
+    agent._flush_messages_to_session_db([
+        {"role": "user", "content": "make a worksheet"},
+        {"role": "assistant", "content": None, "tool_calls": []},
+        make_tool_result_message("terminal", "done", "c1"),
+        {"role": "assistant", "content": "Finished."},
+    ])
+
+    assert session_db.append_message.call_count == 4
+    assert {
+        call.kwargs["turn_id"]
+        for call in session_db.append_message.call_args_list
+    } == {"turn-123"}

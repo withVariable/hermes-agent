@@ -721,6 +721,18 @@ class TestMessageStorage:
         assert conv[1]["content"] == "Hi!"
         assert isinstance(conv[1]["timestamp"], float)
 
+    def test_turn_id_is_stored_without_entering_model_history(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="Done.",
+            turn_id="turn-123",
+        )
+
+        assert db.get_messages("s1")[0]["turn_id"] == "turn-123"
+        assert "turn_id" not in db.get_messages_as_conversation("s1")[0]
+
     def test_platform_message_id_round_trips(self, db):
         """Platform-side message ids (yuanbao msg_id, telegram update_id, …)
         survive append → get_messages_as_conversation under the

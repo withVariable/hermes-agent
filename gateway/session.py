@@ -1410,6 +1410,7 @@ class SessionStore:
                     ),
                     observed=bool(message.get("observed")),
                     timestamp=message.get("timestamp"),
+                    turn_id=message.get("turn_id"),
                 )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
