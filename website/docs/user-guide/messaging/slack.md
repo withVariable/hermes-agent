@@ -693,6 +693,31 @@ How `mentions` mode gates:
 
 For strict multi-bot deployments, pair with `require_mention: true` and `strict_mention: true` — see the smoke-check profile below.
 
+#### Monitor a channel for one trusted bot
+
+For alert intake without a mention on every notification, configure exact Slack
+**bot user IDs** per channel. Keep `allow_bots: mentions` for other bots:
+
+```yaml
+platforms:
+  slack:
+    extra:
+      allow_bots: mentions
+      free_response_channels: [C_ONCALL]
+      bot_response_channels:
+        C_ONCALL: [U_DATADOG_BOT]
+      reply_in_thread: true
+```
+
+Each new alert starts its own thread; replies retain that thread's session.
+`bot_response_channels` only relaxes the bot mention gate for the listed sender
+in the listed channel. It does not override channel authorization, ignored or
+allowed channels, `require_mention_channels`, or `thread_require_mention`.
+`allow_bots: none` still blocks all bots. Hermes ignores its own messages even
+if its user ID is listed. Missing user IDs, malformed mappings, message text,
+display names, and attachment contents do not grant access. Configure this key
+under `platforms.slack.extra`.
+
 ### Reaction Triggers (`reaction_triggers`)
 
 By default, emoji reactions are acknowledged and dropped — a 👍 on a bot

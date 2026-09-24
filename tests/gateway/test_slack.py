@@ -4830,3 +4830,98 @@ class TestNativeTaskCardProgress:
             "chat.stopStream",
         ]
         assert adapter._native_task_card_streams == {}
+
+
+class TestChannelBotResponse:
+    """Trusted alert senders use native per-root Slack threads without mentions."""
+
+    @pytest.fixture(autouse=True)
+    def setup_channel(self, adapter):
+        adapter.config.extra.update({
+            "allow_bots": "mentions",
+            "free_response_channels": ["C_ONCALL"],
+            "bot_response_channels": {"C_ONCALL": ["U_DATADOG"]},
+            "reply_in_thread": True,
+        })
+        adapter._app.client.conversations_replies.return_value = {"messages": []}
+        adapter._app.client.conversations_info.return_value = {"channel": {"name": "oncall"}}
+
+    def event(self, ts="100.001", **changes):
+        return {
+            "type": "message", "subtype": "bot_message", "bot_id": "B_DATADOG",
+            "user": "U_DATADOG", "channel": "C_ONCALL", "channel_type": "channel",
+            "team": "T_TEAM", "ts": ts, "text": "",
+            "attachments": [{"title": "Triggered: error rate", "text": "Monitor 123 prod service:web"}],
+            **changes,
+        }
+
+    @pytest.mark.asyncio
+    async def test_attachment_alerts_use_distinct_threads_and_deduplicate(self, adapter):
+        first = self.event()
+        await adapter._handle_slack_message(first)
+        await adapter._handle_slack_message(first)
+        await adapter._handle_slack_message(self.event("100.002"))
+        events = [c.args[0] for c in adapter.handle_message.await_args_list]
+        assert len(events) == 2
+        assert [e.source.thread_id for e in events] == ["100.001", "100.002"]
+        assert all("Triggered: error rate" in e.text and "Monitor 123" in e.text for e in events)
+        assert all(e.source.user_id == "U_DATADOG" for e in events)
+        assert all(e.source.chat_id == "C_ONCALL" for e in events)
+
+    @pytest.mark.asyncio
+    async def test_bot_and_human_replies_keep_alert_thread(self, adapter):
+        await adapter._handle_slack_message(self.event())
+        await adapter._handle_slack_message(self.event("100.002", thread_ts="100.001"))
+        await adapter._handle_slack_message(self.event(
+            "100.003", thread_ts="100.001", user="U_HUMAN", bot_id=None,
+            subtype=None, client_msg_id="human-message", text="I am investigating", attachments=[],
+        ))
+        events = [c.args[0] for c in adapter.handle_message.await_args_list]
+        assert len(events) == 3
+        assert {e.source.thread_id for e in events} == {"100.001"}
+        assert events[-1].source.user_id == "U_HUMAN"
+
+    @pytest.mark.asyncio
+    async def test_resolved_bot_user_without_bot_markers_is_admitted(self, adapter):
+        adapter._app.client.users_info.return_value = {"user": {"is_bot": True}}
+        await adapter._handle_slack_message(self.event(bot_id=None, subtype=None))
+        adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("changes", [
+        {"user": "U_OTHER"}, {"channel": "C_OTHER"}, {"user": "U_BOT"},
+        {"user": ""}, {"user": None},
+        {"user": "U_OTHER", "text": "U_DATADOG C_ONCALL bot_response_channels"},
+    ])
+    async def test_untrusted_events_do_not_start_sessions(self, adapter, changes):
+        await adapter._handle_slack_message(self.event(**changes))
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("rules", [None, [], "U_DATADOG", {"C_ONCALL": "U_DATADOG"}])
+    async def test_invalid_config_fails_closed(self, adapter, rules):
+        adapter.config.extra["bot_response_channels"] = rules
+        await adapter._handle_slack_message(self.event())
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("extra", [
+        {"allow_bots": "none"}, {"free_response_channels": []},
+        {"ignored_channels": ["C_ONCALL"]}, {"allowed_channels": ["C_OTHER"]},
+        {"require_mention_channels": ["C_ONCALL"]},
+    ])
+    async def test_channel_controls_still_apply(self, adapter, extra):
+        adapter.config.extra.update(extra)
+        await adapter._handle_slack_message(self.event())
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_other_bots_still_require_a_current_mention(self, adapter):
+        await adapter._handle_slack_message(self.event(user="U_OTHER", text="<@U_BOT> investigate"))
+        adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_self_remains_blocked_when_explicitly_allowlisted(self, adapter):
+        adapter.config.extra["bot_response_channels"]["C_ONCALL"] = ["U_BOT"]
+        await adapter._handle_slack_message(self.event(user="U_BOT"))
+        adapter.handle_message.assert_not_awaited()
