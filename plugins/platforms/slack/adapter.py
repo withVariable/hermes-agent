@@ -3651,6 +3651,23 @@ class SlackAdapter(BasePlatformAdapter):
             return "none"
         return value
 
+    def _slack_channel_allows_bot(self, event: dict) -> bool:
+        """Permit an exact bot user in an operator-configured channel.
+
+        This only relaxes the bot mention gate. Normal channel authorization,
+        mention routing, and thread/session isolation still apply. Message text,
+        attachments, display names, and bot IDs cannot grant this exception.
+        """
+        rules = self.config.extra.get("bot_response_channels", {})
+        user_id = event.get("user")
+        if not isinstance(rules, dict) or not isinstance(user_id, str) or not user_id:
+            return False
+        self_ids = {self._bot_user_id, *self._team_bot_user_ids.values()}
+        if user_id in self_ids:
+            return False
+        allowed = rules.get(event.get("channel"))
+        return isinstance(allowed, list) and user_id in allowed
+
     def _event_declares_bot_sender(self, event: dict) -> bool:
         """Return True when the Slack event itself identifies a bot sender."""
         if event.get("bot_id") or event.get("bot_profile"):
@@ -5877,7 +5894,7 @@ class SlackAdapter(BasePlatformAdapter):
         #   "none"     — ignore all bot/app-authored messages (default,
         #                backward-compatible)
         #   "mentions" — accept bot/app-authored messages only when they
-        #                @mention us
+        #                @mention us, or match bot_response_channels
         #   "all"      — accept all bot/app-authored messages (except our own)
         #
         # Some Slack app-originated events arrive without subtype=bot_message
@@ -5901,7 +5918,11 @@ class SlackAdapter(BasePlatformAdapter):
             elif allow_bots == "mentions":
                 # Include Block-Kit-only mentions, not just the flat text (#52387)
                 text_check = _slack_mention_detection_text(event)
-                if self._bot_user_id and f"<@{self._bot_user_id}>" not in text_check:
+                if (
+                    self._bot_user_id
+                    and f"<@{self._bot_user_id}>" not in text_check
+                    and not self._slack_channel_allows_bot(event)
+                ):
                     logger.debug(
                         "[Slack] Dropping bot message under allow_bots=mentions: "
                         "no <@%s> mention in flat text or blocks",
@@ -6195,7 +6216,8 @@ class SlackAdapter(BasePlatformAdapter):
         # the same allow_bots policy to resolved bot users, and in
         # ``allow_bots: mentions`` require the current message text to mention
         # this bot — thread history, reply parents, and active sessions do not
-        # count as a bot-to-bot summons.
+        # count as a bot-to-bot summons. An explicit channel/sender exception
+        # in bot_response_channels may also admit the message.
         if user_id and user_id != bot_uid:
             sender_is_bot_user = self._event_declares_bot_sender(event)
             if not sender_is_bot_user:
@@ -6208,7 +6230,11 @@ class SlackAdapter(BasePlatformAdapter):
                 allow_bots = self._slack_allow_bots()
                 if allow_bots == "none":
                     return
-                if allow_bots == "mentions" and not is_mentioned:
+                if (
+                    allow_bots == "mentions"
+                    and not is_mentioned
+                    and not self._slack_channel_allows_bot(event)
+                ):
                     return
 
         if not is_one_to_one_dm and bot_uid:
