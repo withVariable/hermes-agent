@@ -29,10 +29,14 @@ def _start_session_work(target, *, name: str, session: dict | None = None):
     if not retirement.acquire():
         return None
 
+    from tui_gateway.session_publication import _reserve
+    release = _reserve(session) if session is not None else lambda: None
+
     def run():
         try:
             target()
         finally:
+            release()
             retirement.release()
 
     try:
@@ -42,6 +46,7 @@ def _start_session_work(target, *, name: str, session: dict | None = None):
         thread.start()
         return thread
     except BaseException:
+        release()
         retirement.release()
         raise
 

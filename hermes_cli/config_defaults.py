@@ -19,6 +19,7 @@ def _aux(timeout, *, reasoning_effort=True, **extra):
 
 
 DEFAULT_CONFIG = {
+    "tool_result_budget": {"exempt_tools": []},
     "model": "",
     "providers": {},
     "fallback_providers": [],

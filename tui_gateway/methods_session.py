@@ -1810,6 +1810,29 @@ def _(rid, params: dict, session: dict) -> dict:
     return _ok(rid, {"output": "\n".join(lines)})
 
 
+@method("session.publish")
+def _(rid, params: dict) -> dict:
+    from tui_gateway.session_publication import publish_message
+    db = _get_db()
+    if db is None:
+        return _db_unavailable_error(rid, code=5008)
+    try:
+        with _session_resume_lock:
+            return _ok(rid, publish_message(db, list(_sessions.values()), params))
+    except ValueError as exc:
+        return _err(rid, 4004, str(exc))
+
+
+def _owned_session_operation(fn):
+    def owned(rid, params):
+        from tui_gateway.session_publication import run_owned_operation
+        session, err = _sess(params, rid)
+        if err:
+            return err
+        return run_owned_operation(session, lambda: fn(rid, params))
+    return owned
+
+
 @_session_method("session.history")
 def _(rid, params: dict, session: dict) -> dict:
     history = list(session.get("history", []))
@@ -1952,6 +1975,7 @@ def _compress_live(rid, sid: str, session: dict, focus_topic: str) -> dict:
 
 @method("session.compress")
 @_profile_scoped
+@_owned_session_operation
 def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
