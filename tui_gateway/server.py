@@ -5747,6 +5747,22 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"output": "\n".join(lines)})
 
 
+@method("session.publish")
+def _(rid, params: dict) -> dict:
+    """CAS-publish an external assistant message only when native work is idle."""
+    from tui_gateway.session_publication import publish_message
+
+    db = _get_db()
+    if db is None:
+        return _db_unavailable_error(rid, code=5008)
+    try:
+        with _session_resume_lock:
+            result = publish_message(db, list(_sessions.values()), params)
+        return _ok(rid, result)
+    except ValueError as exc:
+        return _err(rid, 4004, str(exc))
+
+
 @method("session.history")
 def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
@@ -5798,7 +5814,21 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"removed": removed})
 
 
+def _owned_session_operation(fn):
+    """Keep synchronous session mutations owned through their entire RPC tail."""
+    def owned(rid, params):
+        from tui_gateway.session_publication import run_owned_operation
+
+        session, err = _sess(params, rid)
+        if err:
+            return err
+        return run_owned_operation(session, lambda: fn(rid, params))
+
+    return owned
+
+
 @method("session.compress")
+@_owned_session_operation
 def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
@@ -6380,7 +6410,9 @@ def _(rid, params: dict) -> dict:
             return
         _run_prompt_submit(rid, sid, session, text)
 
-    threading.Thread(target=run_after_agent_ready, daemon=True).start()
+    from tui_gateway.session_publication import start_owned_worker
+
+    start_owned_worker(session, run_after_agent_ready, thread_factory=threading.Thread)
     return _ok(rid, {"status": "streaming"})
 
 
@@ -7006,7 +7038,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 file=sys.stderr,
             )
 
-    threading.Thread(target=run, daemon=True).start()
+    from tui_gateway.session_publication import start_owned_worker
+
+    start_owned_worker(session, run, thread_factory=threading.Thread)
 
 
 @method("clipboard.paste")
