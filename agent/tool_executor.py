@@ -117,11 +117,22 @@ def _budget_for_agent(agent) -> BudgetConfig:
     can't push the request past the model's limit (#23767). Falls back to the default budget when the
     context length isn't resolvable.
     """
+    from dataclasses import replace
+    from hermes_cli.config import load_config
+
     try:
         ctx = getattr(getattr(agent, "context_compressor", None), "context_length", None)
-        return budget_for_context_window(int(ctx) if ctx else None)
+        budget = budget_for_context_window(int(ctx) if ctx else None)
     except Exception:
-        return DEFAULT_BUDGET
+        budget = DEFAULT_BUDGET
+    try:
+        names = load_config().get("tool_result_budget", {}).get("exempt_tools", [])
+        if not isinstance(names, list) or any(not isinstance(name, str) for name in names):
+            raise ValueError("tool_result_budget.exempt_tools must be a list of tool names")
+        return replace(budget, exempt_tools=frozenset(names))
+    except Exception:
+        logger.warning("Could not load tool-result budget exemptions", exc_info=True)
+        return budget
 
 _MAX_TOOL_WORKERS = 8  # concurrent worker threads per batch
 _DEFAULT_IMAGE_PARALLEL_REQUESTS = 4

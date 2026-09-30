@@ -52,6 +52,7 @@ class BudgetConfig:
     preview_size: int = DEFAULT_PREVIEW_SIZE_CHARS
     mcp_result_size: int = DEFAULT_MCP_RESULT_SIZE_CHARS
     tool_overrides: Dict[str, int] = field(default_factory=dict)
+    exempt_tools: frozenset[str] = field(default_factory=frozenset)
 
     def resolve_threshold(self, tool_name: str) -> int | float:
         """Priority: pinned -> tool_overrides -> mcp_ prefix -> registry per-tool -> default.
@@ -62,6 +63,8 @@ class BudgetConfig:
         For the default budget this is a no-op because both equal 100K; for a scaled-down budget it prevents
         a per-tool registry value from re-inflating the cap past the model's window (#23767).
         """
+        if tool_name in self.exempt_tools:
+            return float("inf")
         if tool_name in PINNED_THRESHOLDS:
             return PINNED_THRESHOLDS[tool_name]
         if tool_name in self.tool_overrides:
