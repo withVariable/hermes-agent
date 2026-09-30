@@ -7131,6 +7131,28 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error("[Slack] send_slash_confirm failed: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    @staticmethod
+    def _clarify_sections(text: str) -> list:
+        """Escape and split prompt text without cutting a Slack entity."""
+        chunks = []
+        parts = []
+        size = 0
+        for char in text:
+            escaped = {"&": "&amp;", "<": "&lt;", ">": "&gt;"}.get(char, char)
+            if size + len(escaped) > 3000:
+                chunks.append("".join(parts))
+                parts = []
+                size = 0
+            parts.append(escaped)
+            size += len(escaped)
+        if parts:
+            chunks.append("".join(parts))
+        return [
+            {"type": "section", "text": {"type": "mrkdwn", "text": chunk}, "expand": True}
+            for chunk in chunks
+        ]
+
+
     async def send_clarify(
         self,
         chat_id: str,
@@ -7176,27 +7198,20 @@ class SlackAdapter(BasePlatformAdapter):
         try:
             thread_ts = self._resolve_thread_ts(None, metadata)
 
-            # Escape the Slack mrkdwn control chars (&, <, >) so a question
-            # containing them renders literally instead of as markup/mentions.
-            # Section text caps at 3000 chars — budget the question so the
-            # wrapper never pushes the block over the limit (overflow →
-            # invalid_blocks → no buttons).
-            q = (question or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            body = f"❓ {q}"
-            budget = 3000 - len("...")
-            if len(body) > budget:
-                body = body[:budget] + "..."
+            # Full descriptions live in wrapping sections, never button labels.
+            prompt_texts = [f"❓ {question or ''}", *[
+                f"{idx + 1}. {choice}" for idx, choice in enumerate(choices)
+            ]]
 
             # One button per choice + a free-text "Other" button.  Slack caps
             # an actions block at 5 elements; the clarify tool caps choices at
             # 4 (+ Other = 5) so this is normally one block, but chunk anyway
             # so a larger choice list degrades gracefully instead of 400ing.
             elements = []
-            for idx, choice in enumerate(choices):
-                label = str(choice).strip() or f"Option {idx + 1}"
+            for idx in range(len(choices)):
                 elements.append({
                     "type": "button",
-                    "text": {"type": "plain_text", "text": label[:75], "emoji": True},
+                    "text": {"type": "plain_text", "text": f"Option {idx + 1}", "emoji": True},
                     "action_id": f"hermes_clarify_choice_{idx}",
                     "value": f"{clarify_id}|{idx}",
                 })
@@ -7207,22 +7222,38 @@ class SlackAdapter(BasePlatformAdapter):
                 "value": f"{clarify_id}|other",
             })
 
-            blocks: list = [
-                {"type": "section", "text": {"type": "mrkdwn", "text": body}},
+            action_blocks = [
+                {"type": "actions", "elements": elements[start:start + 5]}
+                for start in range(0, len(elements), 5)
             ]
-            for start in range(0, len(elements), 5):
-                blocks.append({"type": "actions", "elements": elements[start:start + 5]})
+            # Reserve room for controls and the eventual outcome block. Keep
+            # fallback text below Slack's 40k truncation threshold as well.
+            pages: list = [[]]
+            page_size = 0
+            section_limit = 49 - len(action_blocks)
+            for text in prompt_texts:
+                for block in self._clarify_sections(text):
+                    size = len(block["text"]["text"]) + 2
+                    if pages[-1] and (len(pages[-1]) >= section_limit or page_size + size > 35000):
+                        pages.append([])
+                        page_size = 0
+                    pages[-1].append(block)
+                    page_size += size
 
-            kwargs: Dict[str, Any] = {
-                "channel": chat_id,
-                "text": body,
-                "blocks": blocks,
-            }
-            if thread_ts:
-                kwargs["thread_ts"] = thread_ts
-
-            result = await self._get_client(chat_id).chat_postMessage(**kwargs)
-            msg_ts = result.get("ts", "")
+            for page_idx, page in enumerate(pages):
+                kwargs: Dict[str, Any] = {
+                    "channel": chat_id,
+                    "text": "\n\n".join(block["text"]["text"] for block in page),
+                    "blocks": page + (action_blocks if page_idx == len(pages) - 1 else []),
+                }
+                if thread_ts:
+                    kwargs["thread_ts"] = thread_ts
+                result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+                msg_ts = result.get("ts", "")
+                if result.get("ok") is False or not msg_ts:
+                    raise RuntimeError("Slack did not confirm clarification delivery")
+                if not thread_ts and len(pages) > 1:
+                    thread_ts = msg_ts
             if msg_ts:
                 # Mark unresolved so the action handler's atomic-pop guard can
                 # reject double-clicks (mirrors _approval_resolved).
@@ -7581,25 +7612,22 @@ class SlackAdapter(BasePlatformAdapter):
         self,
         channel_id: str,
         msg_ts: str,
-        question_text: str,
+        prompt_blocks: list,
         decision_text: str,
     ) -> None:
         """Rewrite a clarify message to show the outcome and drop the buttons."""
-        updated_blocks = [
-            {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": question_text or "Clarification"},
-            },
+        status = decision_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        updated_blocks = (prompt_blocks or self._clarify_sections("Clarification")) + [
             {
                 "type": "context",
-                "elements": [{"type": "mrkdwn", "text": decision_text}],
+                "elements": [{"type": "mrkdwn", "text": status}],
             },
         ]
         try:
             await self._get_client(channel_id).chat_update(
                 channel=channel_id,
                 ts=msg_ts,
-                text=decision_text,
+                text="\n\n".join(b["text"]["text"] for b in updated_blocks if b["type"] == "section") + "\n\n" + status,
                 blocks=updated_blocks,
             )
         except Exception as e:
@@ -7639,12 +7667,11 @@ class SlackAdapter(BasePlatformAdapter):
         if self._clarify_resolved.pop(msg_ts, True):
             return
 
-        # Preserve the original question so the resolved message keeps context.
-        original_text = ""
-        for block in message.get("blocks", []):
-            if block.get("type") == "section":
-                original_text = (block.get("text") or {}).get("text", "")
-                break
+        # Keep all descriptions when replacing controls with the outcome.
+        original_text = [
+            block for block in message.get("blocks", [])
+            if block.get("type") == "section"
+        ]
 
         from tools import clarify_gateway as _clarify_mod
 
@@ -7690,7 +7717,7 @@ class SlackAdapter(BasePlatformAdapter):
         if _clarify_mod.resolve_gateway_clarify(clarify_id, resolved_text):
             await self._update_clarify_message(
                 channel_id, msg_ts, original_text,
-                f"✅ {user_name}: {resolved_text}",
+                f"✅ {user_name}: selected option {idx + 1}",
             )
             # Privacy: keep the chosen option text out of INFO-level logs
             # (clarify choices can carry user/session context). Metadata at

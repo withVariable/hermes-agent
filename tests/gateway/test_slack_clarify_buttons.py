@@ -116,15 +116,16 @@ class TestSlackSendClarify:
         blocks = kwargs["blocks"]
         assert blocks[0]["type"] == "section"
         assert "Which environment?" in blocks[0]["text"]["text"]
-        assert blocks[1]["type"] == "actions"
-        elements = blocks[1]["elements"]
+        assert "1. staging" in blocks[1]["text"]["text"]
+        assert "2. production" in blocks[2]["text"]["text"]
+        elements = next(b["elements"] for b in blocks if b["type"] == "actions")
         # 2 choices + Other
         assert len(elements) == 3
         assert elements[0]["action_id"] == "hermes_clarify_choice_0"
         assert elements[0]["value"] == "cid1|0"
         assert elements[1]["action_id"] == "hermes_clarify_choice_1"
         assert elements[1]["value"] == "cid1|1"
-        assert elements[0]["text"]["text"] == "staging"
+        assert elements[0]["text"]["text"] == "Option 1"
         # Final button is the free-text "Other"
         assert elements[2]["action_id"] == "hermes_clarify_other"
         assert elements[2]["value"] == "cid1|other"
@@ -133,6 +134,86 @@ class TestSlackSendClarify:
                 action_ids = [element["action_id"] for element in block["elements"]]
                 assert len(action_ids) == len(set(action_ids))
 
+
+    @pytest.mark.asyncio
+    async def test_long_options_are_readable_outside_buttons(self):
+        adapter = _make_adapter()
+        client = adapter._team_clients["T1"]
+        client.chat_postMessage = AsyncMock(return_value={"ts": "1.1"})
+        choices = [
+            "Keep the existing workflow and display every complete option in wrapping "
+            "message text, including this important ending.",
+            "Use another approach with a distinct ending.",
+        ]
+        result = await adapter.send_clarify(
+            "C1", "Which approach?", choices, "cid-long", "sk-long"
+        )
+        assert result.success
+        payload = client.chat_postMessage.call_args.kwargs
+        text = "\n".join(
+            b["text"]["text"] for b in payload["blocks"] if b["type"] == "section"
+        )
+        for idx, choice in enumerate(choices, 1):
+            assert f"{idx}. {choice}" in text
+            assert f"{idx}. {choice}" in payload["text"]
+        buttons = [e for b in payload["blocks"] if b["type"] == "actions" for e in b["elements"]]
+        assert [e["text"]["text"] for e in buttons[:2]] == ["Option 1", "Option 2"]
+        assert buttons[1]["value"] == "cid-long|1"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("choice", ["<&>" * 1000 + " ending", "漢字🙂\n" * 1000 + " ending"])
+    async def test_large_options_split_without_losing_content(self, choice):
+        import html
+
+        adapter = _make_adapter()
+        client = adapter._team_clients["T1"]
+        client.chat_postMessage = AsyncMock(return_value={"ts": "1.1"})
+        result = await adapter.send_clarify("C1", "Question?", [choice], "large", "sk")
+        assert result.success
+        payload = client.chat_postMessage.call_args.kwargs
+        sections = [b for b in payload["blocks"] if b["type"] == "section"]
+        assert all(0 < len(b["text"]["text"]) <= 3000 for b in sections)
+        assert all(b.get("expand") is True for b in sections)
+        assert "".join(html.unescape(b["text"]["text"]) for b in sections) == "❓ Question?1. " + choice
+
+    @pytest.mark.asyncio
+    async def test_oversized_prompt_posts_all_content_before_controls(self):
+        import html
+
+        adapter = _make_adapter()
+        client = adapter._team_clients["T1"]
+        client.chat_postMessage = AsyncMock(side_effect=[{"ts": f"{i}.1"} for i in range(10)])
+        choice = "full option " * 6000 + "END"
+        result = await adapter.send_clarify(
+            "C1", "Question?", [choice], "huge", "sk", {"thread_ts": "root"}
+        )
+        assert result.success
+        payloads = [c.kwargs for c in client.chat_postMessage.call_args_list]
+        assert len(payloads) > 1
+        assert all(p["thread_ts"] == "root" for p in payloads)
+        assert all(len(p["text"]) <= 35000 and len(p["blocks"]) <= 50 for p in payloads)
+        assert all(b["type"] != "actions" for p in payloads[:-1] for b in p["blocks"])
+        assert payloads[-1]["blocks"][-1]["type"] == "actions"
+        recovered = "".join(
+            html.unescape(b["text"]["text"])
+            for p in payloads for b in p["blocks"] if b["type"] == "section"
+        )
+        assert recovered == "❓ Question?1. " + choice
+        assert adapter._clarify_resolved == {result.message_id: False}
+
+    @pytest.mark.asyncio
+    async def test_failed_continuation_never_posts_controls(self):
+        adapter = _make_adapter()
+        client = adapter._team_clients["T1"]
+        client.chat_postMessage = AsyncMock(side_effect=[{"ts": "1.1"}, RuntimeError("delivery failed")])
+        result = await adapter.send_clarify("C1", "Question?", ["x" * 100000], "huge", "sk")
+        assert not result.success
+        assert len(client.chat_postMessage.call_args_list) == 2
+        assert all(
+            b["type"] != "actions"
+            for c in client.chat_postMessage.call_args_list for b in c.kwargs["blocks"]
+        )
+        assert not adapter._clarify_resolved
 
     @pytest.mark.asyncio
     async def test_mrkdwn_escapes_question(self):
@@ -161,6 +242,44 @@ class TestSlackClarifyChoiceAction:
     def setup_method(self):
         _clear_clarify_state()
 
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("token", ["1", "other", "expired"], ids=["choice", "other", "expired"])
+    async def test_response_preserves_all_descriptions(self, token):
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        _attach_auth_runner(adapter)
+        choices = ["same option", "second " + "long text " * 400 + "<&> ending"]
+        if token != "expired":
+            cm.register("preserve", "sk-preserve", "Pick?", choices)
+        client = adapter._team_clients["T1"]
+        client.chat_postMessage = AsyncMock(return_value={"ts": "2.2"})
+        await adapter.send_clarify("C1", "Pick?", choices, "preserve", "sk-preserve")
+        sent = client.chat_postMessage.call_args.kwargs
+        original_sections = [b for b in sent["blocks"] if b["type"] == "section"]
+        client.chat_update = AsyncMock()
+        body = {
+            "message": {"ts": "2.2", "blocks": sent["blocks"]},
+            "channel": {"id": "C1"},
+            "user": {"name": "norbert", "id": "U_N"},
+        }
+        value = "preserve|" + ("1" if token == "expired" else token)
+        action = {"action_id": "hermes_clarify_other" if token == "other" else "hermes_clarify_choice_1", "value": value}
+        await adapter._handle_clarify_action(AsyncMock(), body, action)
+        updated = client.chat_update.call_args.kwargs
+        assert [b for b in updated["blocks"] if b["type"] == "section"] == original_sections
+        assert not any(b["type"] == "actions" for b in updated["blocks"])
+        assert all(b["text"]["text"] in updated["text"] for b in original_sections)
+        if token == "1":
+            assert cm._entries["preserve"].response == choices[1]
+            assert "Option 2" not in cm._entries["preserve"].response
+        elif token == "other":
+            assert cm.get_pending_for_session("sk-preserve").awaiting_text
+        else:
+            assert "expired" in updated["text"]
+        await adapter._handle_clarify_action(AsyncMock(), body, action)
+        assert client.chat_update.await_count == 1
 
     @pytest.mark.asyncio
     async def test_unauthorized_click_ignored(self):
