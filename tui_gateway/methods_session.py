@@ -1811,6 +1811,7 @@ def _(rid, params: dict, session: dict) -> dict:
 
 
 @method("session.publish")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     from tui_gateway.session_publication import publish_message
     db = _get_db()

@@ -691,9 +691,10 @@ def _(rid, params: dict) -> dict:
     if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):
         _start_agent_build(sid, session)
     from tui_gateway.session_publication import start_owned_worker
+    from agent.memory_provider import spawn_context_thread
     run_thread = start_owned_worker(session,
         lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author), thread_factory=threading.Thread)
+            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author), thread_factory=lambda **kwargs: spawn_context_thread(name=f"prompt-init-{sid}", **kwargs))
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread
     return _ok(rid, {"status": "streaming", **survivor_fields})
