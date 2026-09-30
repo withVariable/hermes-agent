@@ -32,7 +32,7 @@ def test_native_acceptance_excludes_publication_before_initialization(
     monkeypatch.setattr(server.threading, "Thread", thread)
     monkeypatch.setattr(
         server,
-        "_wait_agent",
+        "_wait_agent_for_prompt",
         lambda *args: {"error": {"message": "controlled init failure"}},
     )
     monkeypatch.setattr(server, "_emit", Mock())
@@ -55,6 +55,8 @@ def test_native_acceptance_excludes_publication_before_initialization(
     assert publish("publish", params)["result"]["status"] == "busy"
     held.pop()()
     assert session["running"] is False
+    assert publish("publish", params)["result"]["status"] == "stale"
+    params["history_fingerprint"] = session_publication.history_fingerprint(db.get_messages("teacher"))
     assert publish("publish", params)["result"]["status"] == "published"
     db.close()
 
