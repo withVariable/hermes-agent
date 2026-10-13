@@ -622,11 +622,11 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
     async def load_session(
         self, cwd: str, session_id: str, mcp_servers: list | None = None, **kwargs: Any
-    ) -> LoadSessionResponse | None:
+    ) -> LoadSessionResponse:
         state = await asyncio.to_thread(self.session_manager.update_cwd, session_id, cwd)
         if state is None:
             logger.warning("load_session: session %s not found", session_id)
-            return None
+            raise acp.RequestError.resource_not_found(session_id)
         await self._attach_session_mcp(state, mcp_servers, "Loaded session %s", session_id)
         return LoadSessionResponse(**await self._session_response_fields(state, "load"))
 
@@ -635,8 +635,10 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     ) -> ResumeSessionResponse:
         state = await asyncio.to_thread(self.session_manager.update_cwd, session_id, cwd)
         if state is None:
-            logger.warning("resume_session: session %s not found, creating new", session_id)
-            state = await asyncio.to_thread(self.session_manager.create_session, cwd=cwd)
+            # Resume responses carry no replacement ID. Let the client explicitly
+            # create a new session if this empty session was lost on reconnect.
+            logger.warning("resume_session: session %s not found", session_id)
+            raise acp.RequestError.resource_not_found(session_id)
         await self._attach_session_mcp(state, mcp_servers, "Resumed session %s", state.session_id)
         return ResumeSessionResponse(**await self._session_response_fields(state, "resume"))
 
