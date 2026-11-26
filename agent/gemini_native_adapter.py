@@ -162,7 +162,26 @@ def is_native_gemini_base_url(base_url: str) -> bool:
     normalized = str(base_url or "").strip().rstrip("/").lower()
     if normalized.endswith("/openai"):
         return False
-    return "generativelanguage.googleapis.com" in normalized or is_vertex_express_base_url(normalized)
+    if "generativelanguage.googleapis.com" in normalized or is_vertex_express_base_url(normalized):
+        return True
+    return _is_configured_gemini_proxy_base_url(normalized)
+
+
+def _is_configured_gemini_proxy_base_url(normalized: str) -> bool:
+    """True when ``base_url`` is the operator's explicit ``GEMINI_BASE_URL`` (a native-Gemini proxy
+    root such as ``http://localhost:4000/gemini``). Host matching alone sends such a proxy down the
+    OpenAI-compatible path, which it does not speak; the explicit setting is the operator saying it
+    is native. Compared after version normalization so ``…/gemini`` and ``…/gemini/v1beta`` match."""
+    if not normalized:
+        return False
+    try:
+        from agent.secret_scope import get_secret
+        configured = str(get_secret("GEMINI_BASE_URL") or "").strip().rstrip("/").lower()
+    except Exception:
+        return False
+    if not configured or configured.endswith("/openai"):
+        return False
+    return normalize_gemini_base_url(configured) == normalize_gemini_base_url(normalized)
 
 
 def gemini_accepts_parameters_json_schema(base_url: str) -> bool:
