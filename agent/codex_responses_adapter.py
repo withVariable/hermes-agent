@@ -90,6 +90,12 @@ _FULLWIDTH_PIPE = "\uff5c"
 
 _TEXT_PART_TYPES = {"text", "input_text", "output_text"}
 _IMAGE_PART_TYPES = {"image_url", "input_image"}
+_FILE_PART_TYPES = {"input_file"}
+# A PDF rides the chat image_url seam (the ``_multimodal`` tool-result envelope, a user
+# attachment) as an inline ``data:application/pdf`` URL. ``input_image`` rejects that MIME with
+# a 400 that poisons the whole history, so it goes out as an inline ``input_file`` instead.
+_PDF_DATA_URL_PREFIX = "data:application/pdf"
+_DEFAULT_PDF_FILENAME = "document.pdf"
 _VIDEO_PART_TYPES = {"video", "video_url", "input_video"}
 _OUTPUT_TEXT_TYPES = {"output_text", "text"}
 _ASSISTANT_IMAGE_PLACEHOLDER = "[Assistant image omitted during replay]"
@@ -229,6 +235,8 @@ def _input_image_part(part: Dict[str, Any], role: str = "user", *, keep_empty_ur
     if not _nonempty_str(url) and not keep_empty_url:
         return None
     url = str(url or "")
+    if _is_pdf_data_url(url):
+        return _input_file_part(url, part.get("filename"))
     # Lazy import: the prep module only depends on hermes_constants at import time (no cycle).
     from tools.vision_tools_image_prep import rasterize_svg_data_url, unsupported_inline_image_media_type
     mime = unsupported_inline_image_media_type(url)
@@ -244,6 +252,23 @@ def _input_image_part(part: Dict[str, Any], role: str = "user", *, keep_empty_ur
     if _nonblank(detail):
         image_part["detail"] = detail.strip()
     return image_part
+
+
+def _is_pdf_data_url(url: Any) -> bool:
+    return isinstance(url, str) and url.partition(",")[0].lower().startswith(_PDF_DATA_URL_PREFIX)
+
+
+def _input_file_part(file_data: str, filename: Any = None) -> Dict[str, Any]:
+    """Inline Responses ``input_file`` for a PDF data URL; the API requires a filename alongside ``file_data``."""
+    name = filename.strip() if _nonblank(filename) else _DEFAULT_PDF_FILENAME
+    return {"type": "input_file", "filename": name, "file_data": file_data}
+
+
+def _preflight_file_part(part: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """An already-shaped ``input_file``: only an inline PDF passes. ``file_id`` / ``file_url`` would
+    reference provider-side or remote files, which this adapter never sends."""
+    file_data = part.get("file_data")
+    return _input_file_part(file_data, part.get("filename")) if _is_pdf_data_url(file_data) else None
 
 
 def _chat_content_to_responses_parts(content: Any, *, role: str = "user") -> List[Dict[str, Any]]:
@@ -770,7 +795,7 @@ def _preflight_function_call_output(item: Dict[str, Any], idx: int, ctx: _Prefli
         raise ValueError(f"Codex Responses input[{idx}] function_call_output is missing call_id.")
     output = item.get("output", "")
     if isinstance(output, list):
-        # Multimodal tool result: keep recognised input_text/input_image parts, drop the rest (4xx otherwise).
+        # Multimodal tool result: keep recognised input_text/input_image/input_file parts, drop the rest (4xx otherwise).
         cleaned: List[Dict[str, Any]] = []
         for part in output:
             ptype = part.get("type") if isinstance(part, dict) else None
@@ -778,6 +803,8 @@ def _preflight_function_call_output(item: Dict[str, Any], idx: int, ctx: _Prefli
                 cleaned.append({"type": "input_text", "text": ctx.sanitize_text(part["text"])})
             elif ptype == "input_image" and _nonempty_str(part.get("image_url")):
                 cleaned.append(_input_image_part(part, keep_empty_url=False))
+            elif ptype in _FILE_PART_TYPES and (file_part := _preflight_file_part(part)) is not None:
+                cleaned.append(file_part)
         output_value: Any = cleaned or ""
     else:
         output_value = ctx.sanitize_text(_str_or_empty(output))
@@ -851,6 +878,8 @@ def _preflight_role_message(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) 
             validated.append({"type": text_type, "text": ctx.sanitize_text(text)})
         elif ptype in _IMAGE_PART_TYPES:
             validated.append(_input_image_part(part, role, keep_empty_url=True))
+        elif ptype in _FILE_PART_TYPES and role == "user" and (file_part := _preflight_file_part(part)) is not None:
+            validated.append(file_part)
         else:
             raise ValueError(
                 f"Codex Responses input[{idx}].content[{part_idx}] has unsupported type {part.get('type')!r}."

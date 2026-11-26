@@ -160,6 +160,59 @@ def test_preflight_downgrades_unsupported_inline_image_but_keeps_remote_urls(mon
     assert items[1]["output"] == [{"type": "input_text", "text": "[image omitted: image/svg+xml is not a supported image format]"}]
 
 
+_PDF_DATA_URL = "data:application/pdf;base64,JVBERi0xLjQK"
+
+
+def test_inline_pdf_goes_as_input_file_in_message_and_tool_output():
+    """``input_image`` rejects data:application/pdf with a 400 on every replay. A PDF on the
+    image_url seam — a user attachment or a ``_multimodal`` tool result such as a document read —
+    must go out as an inline ``input_file`` carrying the same bytes, through conversion and preflight."""
+    messages = [
+        {"role": "user", "content": [
+            {"type": "text", "text": "Read this"},
+            {"type": "image_url", "image_url": {"url": _PDF_DATA_URL}, "filename": "guide.pdf"},
+        ]},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "call_d1", "type": "function", "function": {"name": "read_document", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_d1", "content": [
+            {"type": "text", "text": "1 page"}, {"type": "image_url", "image_url": {"url": _PDF_DATA_URL}}]},
+    ]
+    items = _preflight_codex_input_items(_chat_messages_to_responses_input(messages))
+    user, tool_output = items[0], items[-1]
+    assert user["content"] == [
+        {"type": "input_text", "text": "Read this"},
+        {"type": "input_file", "filename": "guide.pdf", "file_data": _PDF_DATA_URL},
+    ]
+    assert tool_output["type"] == "function_call_output"
+    assert tool_output["output"] == [
+        {"type": "input_text", "text": "1 page"},
+        {"type": "input_file", "filename": "document.pdf", "file_data": _PDF_DATA_URL},
+    ]
+
+
+def test_preflight_keeps_only_inline_pdf_input_files():
+    """Already-shaped ``input_file`` parts pass preflight only as inline PDFs: a ``file_id`` or
+    ``file_url`` would reference provider-side or remote files. On a user message an unusable part
+    fails closed like any unsupported part; in a tool result it is dropped like other unknown parts."""
+    pdf = {"type": "input_file", "filename": "a.pdf", "file_data": _PDF_DATA_URL}
+    items = _preflight_codex_input_items([
+        {"role": "user", "content": [pdf]},
+        {"type": "function_call_output", "call_id": "call_1", "output": [
+            pdf, {"type": "input_file", "file_id": "file-abc"}, {"type": "input_file", "file_url": "https://example.invalid/a.pdf"}]},
+    ])
+    assert items[0]["content"] == [pdf]
+    assert items[1]["output"] == [pdf]
+    with pytest.raises(ValueError, match="unsupported type 'input_file'"):
+        _preflight_codex_input_items([{"role": "user", "content": [{"type": "input_file", "file_id": "file-abc"}]}])
+    with pytest.raises(ValueError, match="unsupported type 'input_file'"):
+        _preflight_codex_input_items([{"role": "assistant", "content": [pdf]}])
+
+
+def test_assistant_pdf_still_becomes_a_replay_placeholder():
+    parts = _chat_content_to_responses_parts([{"type": "image_url", "image_url": _PDF_DATA_URL}], role="assistant")
+    assert parts == [{"type": "output_text", "text": "[Assistant image omitted during replay]"}]
+
+
 @pytest.mark.parametrize("part_type", ["video_url", "video", "input_video"])
 def test_chat_content_rejects_video_instead_of_sending_text_only(part_type):
     content = [
